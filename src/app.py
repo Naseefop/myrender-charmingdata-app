@@ -1,61 +1,254 @@
 import dash
+import dash_bootstrap_components as dbc
+import plotly.graph_objects as go
+import yfinance as yf
 import pandas as pd
-from dash import Dash, dash_table, dcc, html, Input, Output, State
-import plotly.express as px
+from dash import Dash, dcc, html, Input, Output, State, dash_table
+from datetime import date, timedelta
 
-app = Dash(__name__)
+# --- Initialize the App ---
+# Use a built-in theme from dash-bootstrap-components for a clean look
+app = Dash(__name__, external_stylesheets=[dbc.themes.SOLAR])
 server = app.server
 
-df = px.data.gapminder()
-
-range_slider = dcc.RangeSlider(
-    value=[1987, 2007],
-    step=5,
-    marks={i: str(i) for i in range(1952, 2012, 5)},
-)
-
-dtable = dash_table.DataTable(
-    columns=[{"name": i, "id": i} for i in sorted(df.columns)],
-    sort_action="native",
-    page_size=10,
-    style_table={"overflowX": "auto"},
-)
-
-download_button = html.Button("Download Filtered CSV", style={"marginTop": 20})
-download_component = dcc.Download()
-
-app.layout = html.Div(
+# --- App Layout ---
+app.layout = dbc.Container(
     [
-        html.H2("Gapminder Data Download", style={"marginBottom": 20}),
-        download_component,
-        range_slider,
-        download_button,
-        dtable,
-    ]
+        # 1. Header
+        dbc.Row(
+            dbc.Col(
+                html.H1("Stock Finance Dashboard", className="text-center text-primary mb-4"),
+                width=12,
+            )
+        ),
+        # 2. Control Panel
+        dbc.Row(
+            [
+                dbc.Col(
+                    dbc.Card(
+                        dbc.CardBody(
+                            [
+                                html.H4("Select Stock", className="card-title"),
+                                # Ticker Input
+                                dbc.Input(
+                                    id="ticker-input",
+                                    value="AAPL",
+                                    type="text",
+                                    placeholder="Enter stock ticker (e.g., AAPL)",
+                                    className="mb-2",
+                                ),
+                                # Date Range Picker
+                                dcc.DatePickerRange(
+                                    id="date-picker",
+                                    min_date_allowed=date(2010, 1, 1),
+                                    max_date_allowed=date.today(),
+                                    start_date=date.today() - timedelta(days=365),
+                                    end_date=date.today(),
+                                    className="mb-2",
+                                ),
+                                # Submit Button
+                                dbc.Button(
+                                    "Fetch Data", id="submit-button", color="primary", n_clicks=0
+                                ),
+                            ]
+                        )
+                    ),
+                    width=12,
+                )
+            ],
+            className="mb-4",
+        ),
+        # 3. Key Metrics (Summary Cards)
+        dbc.Row(
+            [
+                dbc.Col(dbc.Card(id="latest-close-card", color="success", inverse=True)),
+                dbc.Col(dbc.Card(id="52-week-high-card", color="warning", inverse=True)),
+                dbc.Col(dbc.Card(id="52-week-low-card", color="danger", inverse=True)),
+            ],
+            className="mb-4",
+        ),
+        # 4. Graphs
+        dbc.Row(
+            [
+                # Left Graph: Candlestick
+                dbc.Col(
+                    dcc.Loading(
+                        dcc.Graph(id="candlestick-chart"), type="graph"
+                    ),
+                    width=6,
+                ),
+                # Right Graph: Price Line
+                dbc.Col(
+                    dcc.Loading(dcc.Graph(id="price-chart"), type="graph"), width=6
+                ),
+            ],
+            className="mb-4",
+        ),
+        # 5. Data Table
+        dbc.Row(
+            dbc.Col(
+                dcc.Loading(
+                    dash_table.DataTable(
+                        id="data-table",
+                        sort_action="native",
+                        page_size=10,
+                        style_table={"overflowX": "auto"},
+                        # Apply dark theme styles to table
+                        style_header={'backgroundColor': 'rgb(30, 30, 30)', 'color': 'white'},
+                        style_data={'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white'},
+                        style_cell={'textAlign': 'left', 'padding': '5px'},
+                    ),
+                    type="default",
+                ),
+                width=12,
+            )
+        ),
+    ],
+    fluid=True,
 )
 
-
+# --- Callback ---
+# This single callback updates all 6 outputs based on the 3 inputs
 @app.callback(
-    Output(dtable, "data"),
-    Input(range_slider, "value"),
-)
-def update_table(slider_value):
-    if not slider_value:
-        return dash.no_update
-    dff = df[df.year.between(slider_value[0], slider_value[1])]
-    return dff.to_dict("records")
-
-
-@app.callback(
-    Output(download_component, "data"),
-    Input(download_button, "n_clicks"),
-    State(dtable, "derived_virtual_data"),
+    # List all outputs
+    Output("candlestick-chart", "figure"),
+    Output("price-chart", "figure"),
+    Output("latest-close-card", "children"),
+    Output("52-week-high-card", "children"),
+    Output("52-week-low-card", "children"),
+    Output("data-table", "data"),
+    Output("data-table", "columns"),
+    # The button is the Input
+    Input("submit-button", "n_clicks"),
+    # The other controls are State (their values are read only when the button is clicked)
+    State("ticker-input", "value"),
+    State("date-picker", "start_date"),
+    State("date-picker", "end_date"),
+    # Don't run the callback when the app first loads
     prevent_initial_call=True,
 )
-def download_data(n_clicks, data):
-    dff = pd.DataFrame(data)
-    return dcc.send_data_frame(dff.to_csv, "filtered_csv.csv")
+def update_dashboard(n_clicks, ticker, start_date, end_date):
+    
+    # 1. --- Handle Errors and Fetch Data ---
+    if not ticker:
+        # Create an empty figure and card if no ticker
+        empty_fig = go.Figure().update_layout(
+            title_text="No Ticker Selected",
+            template="plotly_dark",
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        )
+        empty_card = dbc.CardBody([html.H5("N/A"), html.P("Enter a ticker")])
+        return empty_fig, empty_fig, empty_card, empty_card, empty_card, [], []
+
+    try:
+        # Fetch data for the selected date range
+        df_chart = yf.download(ticker, start=start_date, end=end_date)
+        
+        # Fetch data for the last year for 52-week metrics
+        today = date.today()
+        year_ago = today - timedelta(days=365)
+        df_metrics = yf.download(ticker, start=year_ago, end=today)
+
+        if df_chart.empty or df_metrics.empty:
+            raise ValueError(f"No data found for ticker '{ticker}'")
+
+    except Exception as e:
+        # If yfinance fails (e.g., bad ticker)
+        error_fig = go.Figure().update_layout(
+            title_text=f"Error: {e}",
+            template="plotly_dark",
+        )
+        error_card = dbc.CardBody([html.H5("Error"), html.P(str(e))])
+        return error_fig, error_fig, error_card, error_card, error_card, [], []
+
+    # 2. --- Create Figures ---
+    
+    # Candlestick Chart
+    candlestick_fig = go.Figure(
+        data=[
+            go.Candlestick(
+                x=df_chart.index,
+                open=df_chart["Open"],
+                high=df_chart["High"],
+                low=df_chart["Low"],
+                close=df_chart["Close"],
+                name="Candlestick",
+            )
+        ]
+    )
+    candlestick_fig.update_layout(
+        title=f"{ticker.upper()} Candlestick Chart",
+        xaxis_title="Date",
+        yaxis_title="Price ($)",
+        template="plotly_dark", # Apply dark theme
+        xaxis_rangeslider_visible=False, # Hide the range slider on this chart
+    )
+
+    # Price Line Chart
+    price_fig = go.Figure()
+    price_fig.add_trace(
+        go.Scatter(x=df_chart.index, y=df_chart["Close"], mode="lines", name="Close")
+    )
+    price_fig.add_trace(
+        go.Bar(x=df_chart.index, y=df_chart["Volume"], name="Volume", yaxis="y2")
+    )
+    price_fig.update_layout(
+        title=f"{ticker.upper()} Close Price & Volume",
+        xaxis_title="Date",
+        yaxis_title="Price ($)",
+        yaxis2=dict(title="Volume", overlaying="y", side="right"),
+        template="plotly_dark",
+    )
+
+    # 3. --- Calculate Metrics and Create Cards ---
+    latest_close = df_metrics["Close"].iloc[-1]
+    week_52_high = df_metrics["High"].max()
+    week_52_low = df_metrics["Low"].min()
+
+    close_card = dbc.CardBody(
+        [
+            html.H5("Latest Close", className="card-title"),
+            html.P(f"${latest_close:,.2f}", className="card-text fs-3"),
+        ]
+    )
+    high_card = dbc.CardBody(
+        [
+            html.H5("52-Week High", className="card-title"),
+            html.P(f"${week_52_high:,.2f}", className="card-text fs-3"),
+        ]
+    )
+    low_card = dbc.CardBody(
+        [
+            html.H5("52-Week Low", className="card-title"),
+            html.P(f"${week_52_low:,.2f}", className="card-text fs-3"),
+        ]
+    )
+
+    # 4. --- Format Data Table ---
+    # Reset index to make 'Date' a column and format it
+    df_table = df_chart.reset_index()
+    df_table["Date"] = df_table["Date"].dt.strftime("%Y-%m-%d")
+    
+    # Round numeric columns for display
+    for col in ["Open", "High", "Low", "Close", "Adj Close"]:
+        df_table[col] = df_table[col].round(2)
+    
+    table_data = df_table.to_dict("records")
+    table_cols = [{"name": i, "id": i} for i in df_table.columns]
+
+    # 5. --- Return All Outputs ---
+    return (
+        candlestick_fig,
+        price_fig,
+        close_card,
+        high_card,
+        low_card,
+        table_data,
+        table_cols,
+    )
 
 
+# --- Run the App ---
 if __name__ == "__main__":
     app.run(debug=True)
