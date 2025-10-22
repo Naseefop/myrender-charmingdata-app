@@ -5,9 +5,9 @@ import yfinance as yf
 import pandas as pd
 from dash import Dash, dcc, html, Input, Output, State, dash_table
 from datetime import date, timedelta
+import numpy as np
 
 # --- Initialize the App ---
-# Use a built-in theme from dash-bootstrap-components for a clean look
 app = Dash(__name__, external_stylesheets=[dbc.themes.SOLAR])
 server = app.server
 
@@ -29,7 +29,6 @@ app.layout = dbc.Container(
                         dbc.CardBody(
                             [
                                 html.H4("Select Stock", className="card-title"),
-                                # Ticker Input
                                 dbc.Input(
                                     id="ticker-input",
                                     value="AAPL",
@@ -37,7 +36,6 @@ app.layout = dbc.Container(
                                     placeholder="Enter stock ticker (e.g., AAPL)",
                                     className="mb-2",
                                 ),
-                                # Date Range Picker
                                 dcc.DatePickerRange(
                                     id="date-picker",
                                     min_date_allowed=date(2010, 1, 1),
@@ -46,9 +44,11 @@ app.layout = dbc.Container(
                                     end_date=date.today(),
                                     className="mb-2",
                                 ),
-                                # Submit Button
                                 dbc.Button(
-                                    "Fetch Data", id="submit-button", color="primary", n_clicks=0
+                                    "Fetch Data",
+                                    id="submit-button",
+                                    color="primary",
+                                    n_clicks=0,
                                 ),
                             ]
                         )
@@ -58,7 +58,7 @@ app.layout = dbc.Container(
             ],
             className="mb-4",
         ),
-        # 3. Key Metrics (Summary Cards)
+        # 3. Key Metrics
         dbc.Row(
             [
                 dbc.Col(dbc.Card(id="latest-close-card", color="success", inverse=True)),
@@ -70,16 +70,13 @@ app.layout = dbc.Container(
         # 4. Graphs
         dbc.Row(
             [
-                # Left Graph: Candlestick
                 dbc.Col(
-                    dcc.Loading(
-                        dcc.Graph(id="candlestick-chart"), type="graph"
-                    ),
+                    dcc.Loading(dcc.Graph(id="candlestick-chart"), type="graph"),
                     width=6,
                 ),
-                # Right Graph: Price Line
                 dbc.Col(
-                    dcc.Loading(dcc.Graph(id="price-chart"), type="graph"), width=6
+                    dcc.Loading(dcc.Graph(id="price-chart"), type="graph"),
+                    width=6,
                 ),
             ],
             className="mb-4",
@@ -93,10 +90,9 @@ app.layout = dbc.Container(
                         sort_action="native",
                         page_size=10,
                         style_table={"overflowX": "auto"},
-                        # Apply dark theme styles to table
-                        style_header={'backgroundColor': 'rgb(30, 30, 30)', 'color': 'white'},
-                        style_data={'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white'},
-                        style_cell={'textAlign': 'left', 'padding': '5px'},
+                        style_header={"backgroundColor": "rgb(30, 30, 30)", "color": "white"},
+                        style_data={"backgroundColor": "rgb(50, 50, 50)", "color": "white"},
+                        style_cell={"textAlign": "left", "padding": "5px"},
                     ),
                     type="default",
                 ),
@@ -108,9 +104,7 @@ app.layout = dbc.Container(
 )
 
 # --- Callback ---
-# This single callback updates all 6 outputs based on the 3 inputs
 @app.callback(
-    # List all outputs
     Output("candlestick-chart", "figure"),
     Output("price-chart", "figure"),
     Output("latest-close-card", "children"),
@@ -118,20 +112,15 @@ app.layout = dbc.Container(
     Output("52-week-low-card", "children"),
     Output("data-table", "data"),
     Output("data-table", "columns"),
-    # The button is the Input
     Input("submit-button", "n_clicks"),
-    # The other controls are State (their values are read only when the button is clicked)
     State("ticker-input", "value"),
     State("date-picker", "start_date"),
     State("date-picker", "end_date"),
-    # Don't run the callback when the app first loads
     prevent_initial_call=True,
 )
 def update_dashboard(n_clicks, ticker, start_date, end_date):
-    
     # 1. --- Handle Errors and Fetch Data ---
     if not ticker:
-        # Create an empty figure and card if no ticker
         empty_fig = go.Figure().update_layout(
             title_text="No Ticker Selected",
             template="plotly_dark",
@@ -142,37 +131,40 @@ def update_dashboard(n_clicks, ticker, start_date, end_date):
         return empty_fig, empty_fig, empty_card, empty_card, empty_card, [], []
 
     try:
-        # Fetch data for the selected date range
         df_chart = yf.download(ticker, start=start_date, end=end_date)
-        
-        # Fetch data for the last year for 52-week metrics
         today = date.today()
         year_ago = today - timedelta(days=365)
         df_metrics = yf.download(ticker, start=year_ago, end=today)
+
+        # Flatten MultiIndex columns if needed
+        if isinstance(df_chart.columns, pd.MultiIndex):
+            df_chart.columns = df_chart.columns.get_level_values(0)
+        if isinstance(df_metrics.columns, pd.MultiIndex):
+            df_metrics.columns = df_metrics.columns.get_level_values(0)
 
         if df_chart.empty or df_metrics.empty:
             raise ValueError(f"No data found for ticker '{ticker}'")
 
     except Exception as e:
-        # If yfinance fails (e.g., bad ticker)
         error_fig = go.Figure().update_layout(
-            title_text=f"Error: {e}",
-            template="plotly_dark",
+            title_text=f"Error: {e}", template="plotly_dark"
         )
         error_card = dbc.CardBody([html.H5("Error"), html.P(str(e))])
         return error_fig, error_fig, error_card, error_card, error_card, [], []
 
     # 2. --- Create Figures ---
-    
-    # Candlestick Chart
+    # Ensure data is serializable
+    df_chart = df_chart.reset_index()
+    df_chart["Date"] = pd.to_datetime(df_chart["Date"]).dt.strftime("%Y-%m-%d")
+
     candlestick_fig = go.Figure(
         data=[
             go.Candlestick(
-                x=df_chart.index,
-                open=df_chart["Open"],
-                high=df_chart["High"],
-                low=df_chart["Low"],
-                close=df_chart["Close"],
+                x=df_chart["Date"].tolist(),
+                open=df_chart["Open"].astype(float).tolist(),
+                high=df_chart["High"].astype(float).tolist(),
+                low=df_chart["Low"].astype(float).tolist(),
+                close=df_chart["Close"].astype(float).tolist(),
                 name="Candlestick",
             )
         ]
@@ -181,17 +173,26 @@ def update_dashboard(n_clicks, ticker, start_date, end_date):
         title=f"{ticker.upper()} Candlestick Chart",
         xaxis_title="Date",
         yaxis_title="Price ($)",
-        template="plotly_dark", # Apply dark theme
-        xaxis_rangeslider_visible=False, # Hide the range slider on this chart
+        template="plotly_dark",
+        xaxis_rangeslider_visible=False,
     )
 
-    # Price Line Chart
     price_fig = go.Figure()
     price_fig.add_trace(
-        go.Scatter(x=df_chart.index, y=df_chart["Close"], mode="lines", name="Close")
+        go.Scatter(
+            x=df_chart["Date"].tolist(),
+            y=df_chart["Close"].astype(float).tolist(),
+            mode="lines",
+            name="Close",
+        )
     )
     price_fig.add_trace(
-        go.Bar(x=df_chart.index, y=df_chart["Volume"], name="Volume", yaxis="y2")
+        go.Bar(
+            x=df_chart["Date"].tolist(),
+            y=df_chart["Volume"].astype(float).tolist(),
+            name="Volume",
+            yaxis="y2",
+        )
     )
     price_fig.update_layout(
         title=f"{ticker.upper()} Close Price & Volume",
@@ -201,10 +202,10 @@ def update_dashboard(n_clicks, ticker, start_date, end_date):
         template="plotly_dark",
     )
 
-    # 3. --- Calculate Metrics and Create Cards ---
-    latest_close = df_metrics["Close"].iloc[-1]
-    week_52_high = df_metrics["High"].max()
-    week_52_low = df_metrics["Low"].min()
+    # 3. --- Metrics ---
+    latest_close = float(df_metrics["Close"].dropna().iloc[-1])
+    week_52_high = float(df_metrics["High"].max())
+    week_52_low = float(df_metrics["Low"].min())
 
     close_card = dbc.CardBody(
         [
@@ -225,19 +226,16 @@ def update_dashboard(n_clicks, ticker, start_date, end_date):
         ]
     )
 
-    # 4. --- Format Data Table ---
-    # Reset index to make 'Date' a column and format it
-    df_table = df_chart.reset_index()
-    df_table["Date"] = df_table["Date"].dt.strftime("%Y-%m-%d")
-    
-    # Round numeric columns for display
-    for col in ["Open", "High", "Low", "Close", "Adj Close"]:
+    # 4. --- Data Table ---
+    df_table = df_chart.copy()
+    numeric_cols = ["Open", "High", "Low", "Close"]
+    for col in numeric_cols:
         df_table[col] = df_table[col].round(2)
-    
+
     table_data = df_table.to_dict("records")
     table_cols = [{"name": i, "id": i} for i in df_table.columns]
 
-    # 5. --- Return All Outputs ---
+    # 5. --- Return Outputs ---
     return (
         candlestick_fig,
         price_fig,
